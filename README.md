@@ -49,14 +49,14 @@ docker run -p 8000:8000 -e ADMIN_USER=admin -e ADMIN_PASS=admin asset-inventory-
 
 ## Frontend
 
-Interface web disponible sur `/static/index.html`.
+Interface web disponible sur `/static/index.html` — `https://www.asset-inventory.tech/static/index.html`
 
 Fonctionnalités :
 - Affichage de la liste des assets en temps réel
 - Ajout d'un asset (nom, type, statut, date d'expiration)
 - Suppression d'un asset
 - Badge de santé du système (appel `/health` au chargement)
-- Gestion des statuts colorés : `active` (vert), `expired` (rouge), `decommissioned` (gris)
+- Statut expiré automatique si `expiry_date` dépassée (visuel JS + job backend toutes les heures)
 
 > Les opérations d'écriture nécessitent une authentification Basic Auth.
 > En production, remplacer par AWS Cognito avec tokens JWT.
@@ -74,13 +74,20 @@ pytest tests/ -v
 Terraform gère l'infrastructure AWS :
 - ECS Fargate + ALB (HTTPS, redirection HTTP→HTTPS)
 - ECR (scan automatique, lifecycle policy 5 images)
-- CloudWatch Logs + Dashboard + Alarme SNS sur erreurs 5xx
+- CloudWatch Logs + Dashboard + Alarme SNS sur erreurs 5xx et arrêt des tâches ECS
 - IAM roles + OIDC GitHub Actions (pas de clés AWS stockées)
 - ACM certificat HTTPS pour www.asset-inventory.tech
+- Container Insights activé sur le cluster ECS
 
 ## Comportement sous charge
 
-L'ALB distribue le trafic vers les tâches ECS. ECS Fargate permet de scaler horizontalement en augmentant le `desired_count` du service. Le dashboard CloudWatch monitore les requêtes/min, la latence et les erreurs 5xx en temps réel.
+Test effectué avec 500 requêtes séquentielles sur `/health` :
+- **565 req/min** au pic
+- **Latence moyenne** : 1.2ms - 5.3ms
+- **Erreurs 5xx** : 0
+- **Tâches ECS** : stables
+
+L'ALB distribue le trafic vers les tâches ECS. ECS Fargate permet de scaler horizontalement en augmentant le `desired_count` du service.
 
 ## Limitations connues et améliorations
 
@@ -91,3 +98,5 @@ L'ALB distribue le trafic vers les tâches ECS. ECS Fargate permet de scaler hor
 | State Terraform local | Backend S3 + DynamoDB pour le state distant |
 | Pas d'auto-scaling | AWS Application Auto Scaling sur métriques CPU/mémoire |
 | Pas de WAF | AWS WAF devant l'ALB |
+| Pas de notification d'expiration proche | Route `/assets/expiring-soon` + alerte SNS J-7 |
+| Job expire tourne dans le conteneur | AWS EventBridge + Lambda pour un job serverless isolé |
