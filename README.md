@@ -35,3 +35,11 @@ docker run -p 8000:8000 -e ADMIN_USER=admin -e ADMIN_PASS=admin asset-inventory-
 ```
 
 > En production, les credentials sont injectés via AWS Secrets Manager.
+
+## Tests
+
+```bash
+pytest tests/ -v
+```
+
+11 tests unitaires avec mock DB couvrant CRUD, auth, et validation.

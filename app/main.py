@@ -1,84 +1,129 @@
+import logging
 import os
-import secrets
-from fastapi import FastAPI, HTTPException, Depends, status
-from fastapi.security import HTTPBasic, HTTPBasicCredentials
-from fastapi.staticfiles import StaticFiles
-from app.database import init_db, get_db
-from app.models import AssetCreate, AssetUpdate, AssetResponse
+from datetime import date, datetime
 from typing import List
 
-app = FastAPI(title="Asset Inventory")
+from fastapi import FastAPI, HTTPException, Depends
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from fastapi.staticfiles import StaticFiles
+import secrets
+
+from app.models import AssetCreate, AssetUpdate, AssetResponse
+from app.database import get_connection, init_db
+
+# Configuration du logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Initialisation de l'application
+app = FastAPI(title="Asset Inventory API")
+
+# Sécurité Basic Auth
 security = HTTPBasic()
-
-ADMIN_USER = os.environ.get("ADMIN_USER", "admin")
-ADMIN_PASS = os.environ.get("ADMIN_PASS", "admin")
-
 
 @app.on_event("startup")
 def startup():
     init_db()
+    logger.info('{"event": "app_started"}')
 
+# Montage des fichiers statiques
+app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
-def auth(credentials: HTTPBasicCredentials = Depends(security)):
-    ok_user = secrets.compare_digest(credentials.username, ADMIN_USER)
-    ok_pass = secrets.compare_digest(credentials.password, ADMIN_PASS)
-    if not (ok_user and ok_pass):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
-    return credentials.username
+# ---- Vérification des credentials ----
+def verify_credentials(credentials: HTTPBasicCredentials = Depends(security)):
+    correct_user = secrets.compare_digest(
+        credentials.username,
+        os.environ.get("ADMIN_USER", "admin")
+    )
+    correct_pass = secrets.compare_digest(
+        credentials.password,
+        os.environ.get("ADMIN_PASS", "admin")
+    )
+    if not (correct_user and correct_pass):
+        raise HTTPException(status_code=401, detail="Unauthorized")
 
-
-@app.get("/health")
-def health():
-    return {"status": "ok"}
-
-
+# ---- Routes GET (lecture, publiques) ----
 @app.get("/assets", response_model=List[AssetResponse])
-def list_assets(user=Depends(auth)):
-    conn = get_db()
-    rows = conn.execute("SELECT * FROM assets").fetchall()
+def get_assets():
+    conn = get_connection()
+    rows = conn.execute("SELECT * FROM assets ORDER BY created_at DESC").fetchall()
     conn.close()
     return [dict(row) for row in rows]
 
-
-@app.post("/assets", response_model=AssetResponse, status_code=201)
-def create_asset(asset: AssetCreate, user=Depends(auth)):
-    conn = get_db()
-    cur = conn.execute(
-        "INSERT INTO assets (name, type, status, owner) VALUES (?, ?, ?, ?)",
-        (asset.name, asset.type, asset.status, asset.owner)
-    )
-    conn.commit()
-    row = conn.execute("SELECT * FROM assets WHERE id=?", (cur.lastrowid,)).fetchone()
+@app.get("/assets/expiring", response_model=List[AssetResponse])
+def get_expiring_assets():
+    today = date.today().isoformat()
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT * FROM assets WHERE expiry_date IS NOT NULL AND expiry_date <= ? ORDER BY expiry_date ASC",
+        (today,)
+    ).fetchall()
     conn.close()
+    return [dict(row) for row in rows]
+
+@app.get("/assets/{asset_id}", response_model=AssetResponse)
+def get_asset(asset_id: int):
+    conn = get_connection()
+    row = conn.execute("SELECT * FROM assets WHERE id = ?", (asset_id,)).fetchone()
+    conn.close()
+    if not row:
+        raise HTTPException(status_code=404, detail="Asset not found")
     return dict(row)
 
+# ---- Routes POST/PUT/DELETE (écriture, protégées) ----
+@app.post("/assets", response_model=AssetResponse, status_code=201)
+def create_asset(asset: AssetCreate, _=Depends(verify_credentials)):
+    conn = get_connection()
+    created_at = datetime.utcnow().date().isoformat()
+    cursor = conn.execute(
+        "INSERT INTO assets (name, asset_type, status, expiry_date, created_at) VALUES (?, ?, ?, ?, ?)",
+        (asset.name, asset.asset_type, asset.status,
+         asset.expiry_date.isoformat() if asset.expiry_date else None,
+         created_at)
+    )
+    conn.commit()
+    row = conn.execute("SELECT * FROM assets WHERE id = ?", (cursor.lastrowid,)).fetchone()
+    conn.close()
+    logger.info('{"event": "asset_created", "asset_id": %d}', cursor.lastrowid)
+    return dict(row)
 
 @app.put("/assets/{asset_id}", response_model=AssetResponse)
-def update_asset(asset_id: int, asset: AssetUpdate, user=Depends(auth)):
-    conn = get_db()
-    existing = conn.execute("SELECT * FROM assets WHERE id=?", (asset_id,)).fetchone()
-    if not existing:
+def update_asset(asset_id: int, asset: AssetUpdate, _=Depends(verify_credentials)):
+    conn = get_connection()
+    row = conn.execute("SELECT * FROM assets WHERE id = ?", (asset_id,)).fetchone()
+    if not row:
+        conn.close()
         raise HTTPException(status_code=404, detail="Asset not found")
-    updated = {**dict(existing), **asset.model_dump(exclude_none=True)}
+    current = dict(row)
+    updated = {
+        "name": asset.name if asset.name is not None else current["name"],
+        "asset_type": asset.asset_type if asset.asset_type is not None else current["asset_type"],
+        "status": asset.status if asset.status is not None else current["status"],
+        "expiry_date": asset.expiry_date.isoformat() if asset.expiry_date else current["expiry_date"],
+    }
     conn.execute(
-        "UPDATE assets SET name=?, type=?, status=?, owner=? WHERE id=?",
-        (updated["name"], updated["type"], updated["status"], updated["owner"], asset_id)
+        "UPDATE assets SET name=?, asset_type=?, status=?, expiry_date=? WHERE id=?",
+        (updated["name"], updated["asset_type"], updated["status"], updated["expiry_date"], asset_id)
     )
     conn.commit()
-    row = conn.execute("SELECT * FROM assets WHERE id=?", (asset_id,)).fetchone()
+    row = conn.execute("SELECT * FROM assets WHERE id = ?", (asset_id,)).fetchone()
     conn.close()
+    logger.info('{"event": "asset_updated", "asset_id": %d}', asset_id)
     return dict(row)
 
-
 @app.delete("/assets/{asset_id}", status_code=204)
-def delete_asset(asset_id: int, user=Depends(auth)):
-    conn = get_db()
-    existing = conn.execute("SELECT * FROM assets WHERE id=?", (asset_id,)).fetchone()
-    if not existing:
+def delete_asset(asset_id: int, _=Depends(verify_credentials)):
+    conn = get_connection()
+    row = conn.execute("SELECT * FROM assets WHERE id = ?", (asset_id,)).fetchone()
+    if not row:
+        conn.close()
         raise HTTPException(status_code=404, detail="Asset not found")
-    conn.execute("DELETE FROM assets WHERE id=?", (asset_id,))
+    conn.execute("DELETE FROM assets WHERE id = ?", (asset_id,))
     conn.commit()
     conn.close()
+    logger.info('{"event": "asset_deleted", "asset_id": %d}', asset_id)
 
-
-app.mount("/static", StaticFiles(directory="app/static"), name="static")
+# ---- Health check ----
+@app.get("/health")
+def health():
+    return {"status": "ok", "database": "ok", "timestamp": datetime.utcnow().isoformat()}
