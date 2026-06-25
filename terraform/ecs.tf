@@ -1,6 +1,11 @@
 # Cluster ECS
 resource "aws_ecs_cluster" "main" {
   name = "default"
+
+  setting {
+    name  = "containerInsights"
+    value = "enabled"
+  }
 }
 
 # CloudWatch Log Group

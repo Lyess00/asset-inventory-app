@@ -21,11 +21,29 @@ resource "aws_cloudwatch_metric_alarm" "errors_5xx" {
   threshold           = 5
   alarm_description   = "Trop d'erreurs 5xx sur le Load Balancer"
   treat_missing_data  = "notBreaching"
-
   dimensions = {
     LoadBalancer = aws_lb.main.arn_suffix
   }
+  alarm_actions = [aws_sns_topic.alerts.arn]
+  ok_actions    = [aws_sns_topic.alerts.arn]
+}
 
+# Alarme sur l'arrêt des tâches ECS
+resource "aws_cloudwatch_metric_alarm" "ecs_no_tasks" {
+  alarm_name          = "${var.app_name}-no-running-tasks"
+  comparison_operator = "LessThanThreshold"
+  evaluation_periods  = 1
+  metric_name         = "RunningTaskCount"
+  namespace           = "ECS/ContainerInsights"
+  period              = 60
+  statistic           = "Average"
+  threshold           = 1
+  alarm_description   = "Aucune tâche ECS en cours d'exécution"
+  treat_missing_data  = "breaching"
+  dimensions = {
+    ClusterName = aws_ecs_cluster.main.name
+    ServiceName = aws_ecs_service.app.name
+  }
   alarm_actions = [aws_sns_topic.alerts.arn]
   ok_actions    = [aws_sns_topic.alerts.arn]
 }
@@ -33,7 +51,6 @@ resource "aws_cloudwatch_metric_alarm" "errors_5xx" {
 # Dashboard CloudWatch
 resource "aws_cloudwatch_dashboard" "main" {
   dashboard_name = var.app_name
-
   dashboard_body = jsonencode({
     widgets = [
       {
