@@ -43,3 +43,33 @@ pytest tests/ -v
 ```
 
 11 tests unitaires avec mock DB couvrant CRUD, auth, et validation.
+
+## Frontend
+
+Interface disponible sur `/static/index.html` permettant de gérer les assets via le navigateur.
+
+Ajoute dans le README la section frontend comme ça :
+markdown## Frontend
+
+Interface web disponible sur `/static/index.html`.
+
+Fonctionnalités :
+- Affichage de la liste des assets en temps réel
+- Ajout d'un asset (nom, type, statut, date d'expiration)
+- Suppression d'un asset
+- Badge de santé du système (appel `/health` au chargement)
+- Gestion des statuts colorés : `active` (vert), `expired` (rouge), `decommissioned` (gris)
+
+Stack : HTML + Bootstrap 5 + JavaScript vanilla, pas de framework frontend.
+
+> Les opérations d'écriture (POST, DELETE) nécessitent une authentification Basic Auth.
+
+
+## Infrastructure
+
+Terraform gère l'infrastructure AWS :
+- ECS Fargate + ALB
+- ECR
+- CloudWatch Logs + Dashboard + Alarme SNS
+- IAM roles + OIDC GitHub Actions
+- ACM certificat HTTPS
