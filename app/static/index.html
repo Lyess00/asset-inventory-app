@@ -96,7 +96,10 @@
     }
 
     // ---- Badge de statut coloré ----
-    function statusBadge(status) {
+    function statusBadge(status, expiry_date) {
+      if (expiry_date && expiry_date < new Date().toISOString().split('T')[0]) {
+        return `<span class="badge bg-danger">expired</span>`;
+      }
       const colors = {
         active: "success",
         expired: "danger",
@@ -120,7 +123,7 @@
           <td>${a.id}</td>
           <td>${a.name}</td>
           <td>${a.asset_type}</td>
-          <td>${statusBadge(a.status)}</td>
+          <td>${statusBadge(a.status, a.expiry_date)}</td>
           <td>${a.expiry_date || "—"}</td>
           <td>${a.created_at}</td>
           <td>

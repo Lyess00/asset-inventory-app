@@ -1,5 +1,7 @@
 import logging
 import os
+import threading
+import time
 from datetime import date, datetime
 from typing import List
 
@@ -21,13 +23,35 @@ app = FastAPI(title="Asset Inventory API")
 # Sécurité Basic Auth
 security = HTTPBasic()
 
+
+def update_expired_assets():
+    while True:
+        try:
+            conn = get_connection()
+            today = date.today().isoformat()
+            conn.execute(
+                "UPDATE assets SET status='expired' WHERE expiry_date IS NOT NULL AND expiry_date < ? AND status != 'decommissioned'",
+                (today,)
+            )
+            conn.commit()
+            conn.close()
+            logger.info('{"event": "expired_assets_updated"}')
+        except Exception as e:
+            logger.error('{"event": "expired_update_error", "error": "%s"}', str(e))
+        time.sleep(3600)
+
+
 @app.on_event("startup")
 def startup():
     init_db()
     logger.info('{"event": "app_started"}')
+    thread = threading.Thread(target=update_expired_assets, daemon=True)
+    thread.start()
+
 
 # Montage des fichiers statiques
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
+
 
 # ---- Vérification des credentials ----
 def verify_credentials(credentials: HTTPBasicCredentials = Depends(security)):
@@ -42,6 +66,7 @@ def verify_credentials(credentials: HTTPBasicCredentials = Depends(security)):
     if not (correct_user and correct_pass):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
+
 # ---- Routes GET (lecture, publiques) ----
 @app.get("/assets", response_model=List[AssetResponse])
 def get_assets():
@@ -49,6 +74,7 @@ def get_assets():
     rows = conn.execute("SELECT * FROM assets ORDER BY created_at DESC").fetchall()
     conn.close()
     return [dict(row) for row in rows]
+
 
 @app.get("/assets/expiring", response_model=List[AssetResponse])
 def get_expiring_assets():
@@ -61,6 +87,7 @@ def get_expiring_assets():
     conn.close()
     return [dict(row) for row in rows]
 
+
 @app.get("/assets/{asset_id}", response_model=AssetResponse)
 def get_asset(asset_id: int):
     conn = get_connection()
@@ -69,6 +96,7 @@ def get_asset(asset_id: int):
     if not row:
         raise HTTPException(status_code=404, detail="Asset not found")
     return dict(row)
+
 
 # ---- Routes POST/PUT/DELETE (écriture, protégées) ----
 @app.post("/assets", response_model=AssetResponse, status_code=201)
@@ -86,6 +114,7 @@ def create_asset(asset: AssetCreate, _=Depends(verify_credentials)):
     conn.close()
     logger.info('{"event": "asset_created", "asset_id": %d}', cursor.lastrowid)
     return dict(row)
+
 
 @app.put("/assets/{asset_id}", response_model=AssetResponse)
 def update_asset(asset_id: int, asset: AssetUpdate, _=Depends(verify_credentials)):
@@ -111,6 +140,7 @@ def update_asset(asset_id: int, asset: AssetUpdate, _=Depends(verify_credentials
     logger.info('{"event": "asset_updated", "asset_id": %d}', asset_id)
     return dict(row)
 
+
 @app.delete("/assets/{asset_id}", status_code=204)
 def delete_asset(asset_id: int, _=Depends(verify_credentials)):
     conn = get_connection()
@@ -122,6 +152,7 @@ def delete_asset(asset_id: int, _=Depends(verify_credentials)):
     conn.commit()
     conn.close()
     logger.info('{"event": "asset_deleted", "asset_id": %d}', asset_id)
+
 
 # ---- Health check ----
 @app.get("/health")
